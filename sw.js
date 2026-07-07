@@ -1,4 +1,4 @@
-// Focus Timer service worker
+// Looper service worker
 // Strategy: ALWAYS fetch index.html (and any navigation) fresh from the
 // network first, falling back to cache only when offline. Static assets
 // (icons, manifest) are cache-first since they rarely change.
@@ -7,7 +7,7 @@
 // dropped. It does NOT need to be bumped for index.html changes — those
 // are always fetched live.
 const CACHE_VERSION = 'v1';
-const CACHE_NAME = `focus-timer-${CACHE_VERSION}`;
+const CACHE_NAME = `looper-${CACHE_VERSION}`;
 
 const STATIC_ASSETS = [
   './manifest.json',
@@ -15,7 +15,8 @@ const STATIC_ASSETS = [
   './icons/icon-512.png',
   './icons/maskable-192.png',
   './icons/maskable-512.png',
-  './icons/apple-touch-icon.png'
+  './icons/apple-touch-icon.png',
+  './icons/favicon.ico'
 ];
 
 self.addEventListener('install', (event) => {

@@ -1,4 +1,4 @@
-# Focus Timer
+# Looper
 
 A minimal, single-file focus/countdown timer — installable as a PWA on desktop and mobile.
 
@@ -32,7 +32,7 @@ If you ever change `manifest.json` or the icons and want old cached copies purge
 ### Chrome on desktop (Windows/Mac/Linux)
 1. Visit your GitHub Pages URL in Chrome.
 2. Click the **install icon** (a small monitor with a down arrow) in the right side of the address bar — or open the **⋮** menu → **Cast, save, and share** → **Install page as app**.
-3. Confirm. Focus Timer now opens in its own window and shows up in your OS's app launcher/Start menu.
+3. Confirm. Looper now opens in its own window and shows up in your OS's app launcher/Start menu.
 
 ### Chrome on Android
 1. Visit the URL in Chrome.

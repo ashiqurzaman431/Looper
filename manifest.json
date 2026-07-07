@@ -1,7 +1,7 @@
 {
-  "name": "Focus Timer",
-  "short_name": "Focus Timer",
-  "description": "A minimal focus/countdown timer.",
+  "name": "Looper",
+  "short_name": "Looper",
+  "description": "A minimal loop/countdown timer.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
