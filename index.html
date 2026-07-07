@@ -499,6 +499,20 @@
   let intervalId = null;
   let finished = false;
 
+  /* ---------- per-minute beep alert ----------
+     Every time a new whole-minute segment begins (e.g. 55:00, then 54:00,
+     then 53:00 ...), that minute's numeric value (mm) becomes the beep
+     interval for the next 60 seconds of countdown: a short beep plays every
+     mm seconds of elapsed time within that segment, restarting the count
+     each time a new minute segment begins. */
+  let periodAnchor = remaining;   // remaining-seconds value at the start of the current minute segment
+  let periodMM = Math.floor(remaining / 60); // that segment's minute value = beep interval in seconds
+
+  function startBeepPeriod(){
+    periodAnchor = remaining;
+    periodMM = Math.floor(periodAnchor / 60);
+  }
+
   /* ---------- screen wake lock (keep screen on while timer runs) ---------- */
   let wakeLock = null;
 
@@ -581,6 +595,7 @@
 
   function tick(){
     remaining--;
+    checkBeep();
     if(remaining <= 0){
       clearInterval(intervalId);
       running = false;
@@ -602,6 +617,7 @@
       remaining = DURATIONS[mode];
       updateDisplay();
       running = true;
+      startBeepPeriod();
       intervalId = setInterval(tick, 1000);
       startMsTicker();
       acquireWakeLock();
@@ -614,6 +630,7 @@
       releaseWakeLock();
     } else {
       running = true;
+      startBeepPeriod();
       intervalId = setInterval(tick, 1000);
       startMsTicker();
       acquireWakeLock();
@@ -653,6 +670,64 @@
     gain.connect(ctx.destination);
     osc.start(t0);
     osc.stop(t0 + 0.1);
+  }
+
+  // small noise burst used as a percussive "thump" under the beep tone
+  function playNoiseBurst(dur, gainPeak, startOffset){
+    const ctx = getAudioCtx();
+    if(!ctx) return;
+    const t0 = ctx.currentTime + (startOffset || 0);
+    const bufferSize = ctx.sampleRate * dur;
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for(let i = 0; i < bufferSize; i++){
+      data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(gainPeak, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(gain);
+    gain.connect(ctx.destination);
+    src.start(t0);
+  }
+
+  // "bomb-timer" beep: low sharp blip with a hard thump underneath
+  function playBeep(){
+    const ctx = getAudioCtx();
+    if(!ctx) return;
+    playNoiseBurst(0.04, 0.4, 0);
+    const t0 = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(500, t0);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.55, t0 + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.09);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.1);
+  }
+
+  // Called once per second while the timer is running. Fires playBeep() at
+  // elapsed = mm, 2*mm, 3*mm ... seconds within the current minute segment
+  // (mm = that segment's minute value), then rolls over to a new segment
+  // (new mm) once 60 seconds have elapsed since the segment began.
+  function checkBeep(){
+    if(periodMM <= 0) return;
+    let elapsed = periodAnchor - remaining;
+    if(elapsed >= 60){
+      periodAnchor = remaining;
+      periodMM = Math.floor(periodAnchor / 60);
+      elapsed = 0;
+      if(periodMM <= 0) return;
+    }
+    if(elapsed > 0 && elapsed % periodMM === 0){
+      playBeep();
+    }
   }
 
   function adjustDuration(deltaSeconds){
