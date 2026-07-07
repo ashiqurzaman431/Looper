@@ -6,17 +6,16 @@
 // Bump CACHE_VERSION whenever you want to force old cached assets to be
 // dropped. It does NOT need to be bumped for index.html changes — those
 // are always fetched live.
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const CACHE_NAME = `looper-${CACHE_VERSION}`;
 
 const STATIC_ASSETS = [
   './manifest.json',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/maskable-192.png',
-  './icons/maskable-512.png',
-  './icons/apple-touch-icon.png',
-  './icons/favicon.ico'
+  './icon-192.png',
+  './icon-512.png',
+  './maskable-192.png',
+  './maskable-512.png',
+  './favicon.ico'
 ];
 
 self.addEventListener('install', (event) => {
