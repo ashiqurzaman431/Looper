@@ -46,8 +46,8 @@
     height:100%;
     max-width:none;
     background: linear-gradient(160deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01));
-    backdrop-filter: blur(28px) saturate(160%);
-    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    backdrop-filter: blur(18px) saturate(135%);
+    -webkit-backdrop-filter: blur(18px) saturate(135%);
     border:none;
     border-radius:0;
     padding:36px 32px;
@@ -56,12 +56,12 @@
       inset 0 0 60px rgba(255,255,255,0.015);
     position:relative;
     overflow:hidden;
+    contain:paint;
     text-align:center;
     display:flex;
     flex-direction:column;
     align-items:center;
-    justify-content:flex-start;
-    padding-top:8vh;
+    justify-content:center;
     cursor:pointer;
     user-select:none;
     -webkit-tap-highlight-color: transparent;
@@ -158,6 +158,13 @@
     gap:var(--gap);
   }
 
+  .timer-wrap{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    transform-origin:center center;
+  }
+
   .timer-row{
     display:flex;
     align-items:flex-end;
@@ -176,6 +183,16 @@
     transition: opacity .2s ease;
   }
   .digit-display.ms-pixels.idle{ opacity:0.32; }
+  /* the ms display updates far more often than the main timer, so it skips
+     the transform/box-shadow transitions and spawn animation entirely --
+     those are the expensive part, and at this update rate they'd just be
+     interrupting each other anyway. */
+  .digit-display.ms-pixels .tok{
+    transition:none;
+    box-shadow: 0 0 8px 2px rgba(var(--tr), var(--tg), var(--tb), 0.4);
+  }
+  .digit-display.ms-pixels .tok.spawn{ animation:none; }
+  .digit-display.ms-pixels .tok.leaving{ display:none; }
 
   .progress-track{
     width:100%;
@@ -246,11 +263,13 @@
 <body>
 
 <div class="card">
-  <div class="timer-row">
-    <div class="digit-display" id="digitDisplay"></div>
-    <div class="digit-display ms-pixels idle" id="msDisplay"></div>
+  <div class="timer-wrap" id="timerWrap">
+    <div class="timer-row">
+      <div class="digit-display" id="digitDisplay"></div>
+      <div class="digit-display ms-pixels idle" id="msDisplay"></div>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
   </div>
-  <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
 </div>
 
 <script>
@@ -283,13 +302,49 @@
   const progressFill = document.getElementById("progressFill");
   const timerRow = document.querySelector(".timer-row");
   const progressTrack = document.querySelector(".progress-track");
+  const timerWrap = document.getElementById("timerWrap");
 
   function syncProgressTrackWidth(){
     const w = timerRow.offsetWidth;
     if(w > 0) progressTrack.style.width = w + "px";
   }
-  window.addEventListener("resize", syncProgressTrackWidth);
-  window.addEventListener("orientationchange", () => setTimeout(syncProgressTrackWidth, 50));
+
+  /* ---------- scale the whole timer block to fill ~80% of the screen ----------
+     Works for any digit count (MM:SS vs H:MM:SS), the "TIME ENDED" message,
+     and both the normal and rotated (forced-landscape) layouts, because it
+     measures real rendered pixels rather than guessing from viewport units. */
+  const FIT_FRACTION = 0.8;
+  let fitRaf = null;
+
+  function fitTimerToScreen(){
+    if(!timerWrap) return;
+    // reset to natural scale first so we measure the un-scaled size
+    timerWrap.style.transform = "scale(1)";
+    const naturalW = timerWrap.offsetWidth;
+    const naturalH = timerWrap.offsetHeight;
+    if(naturalW === 0 || naturalH === 0) return;
+
+    const cardStyle = getComputedStyle(card);
+    const padX = parseFloat(cardStyle.paddingLeft) + parseFloat(cardStyle.paddingRight);
+    const padY = parseFloat(cardStyle.paddingTop) + parseFloat(cardStyle.paddingBottom);
+    const canvasW = Math.max(0, card.clientWidth - padX);
+    const canvasH = Math.max(0, card.clientHeight - padY);
+    if(canvasW === 0 || canvasH === 0) return;
+
+    const targetW = canvasW * FIT_FRACTION;
+    const targetH = canvasH * FIT_FRACTION;
+
+    const scale = Math.min(targetW / naturalW, targetH / naturalH);
+    timerWrap.style.transform = "scale(" + scale + ")";
+  }
+
+  function scheduleFit(){
+    if(fitRaf) cancelAnimationFrame(fitRaf);
+    fitRaf = requestAnimationFrame(() => { fitRaf = null; fitTimerToScreen(); syncProgressTrackWidth(); });
+  }
+
+  window.addEventListener("resize", scheduleFit);
+  window.addEventListener("orientationchange", () => setTimeout(scheduleFit, 50));
 
   /* ---------- glyph helpers ---------- */
   function litCells(ch){
@@ -404,6 +459,7 @@
       }
       digitDisplay.appendChild(row);
     });
+    scheduleFit();
   }
 
   function renderDigits(str){
@@ -414,6 +470,7 @@
     if(digitDisplay.children.length !== chars.length){
       digitDisplay.innerHTML = "";
       chars.forEach(ch => digitDisplay.appendChild(ch === ":" ? buildColonGrid() : buildGlyphGrid(ch)));
+      scheduleFit();
       return;
     }
 
@@ -441,6 +498,34 @@
   let running = false;
   let intervalId = null;
   let finished = false;
+
+  /* ---------- screen wake lock (keep screen on while timer runs) ---------- */
+  let wakeLock = null;
+
+  async function acquireWakeLock(){
+    if(!('wakeLock' in navigator)) return; // unsupported browser, fail silently
+    try{
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }catch(err){
+      wakeLock = null; // e.g. denied, low battery, or not in foreground — nothing we can do
+    }
+  }
+
+  function releaseWakeLock(){
+    if(wakeLock){
+      wakeLock.release();
+      wakeLock = null;
+    }
+  }
+
+  // Wake locks are auto-released by the browser when the tab/app is hidden.
+  // Re-acquire on return if the timer is still running.
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible' && running && !wakeLock){
+      acquireWakeLock();
+    }
+  });
   let msTickerId = null;
   let msStart = 0;
 
@@ -485,7 +570,7 @@
     msTickerId = setInterval(() => {
       const cs = Math.floor((performance.now() - msStart) % 1000 / 10);
       renderMsDigits(String(cs).padStart(2, "0"));
-    }, 20);
+    }, 50);
   }
 
   function stopMsTicker(){
@@ -502,6 +587,7 @@
       remaining = 0;
       finished = true;
       stopMsTicker();
+      releaseWakeLock();
       updateTimerColor(1); // lock to full red
       progressFill.style.width = "0%";
       renderMessage(["TIME", "ENDED"]);
@@ -518,16 +604,19 @@
       running = true;
       intervalId = setInterval(tick, 1000);
       startMsTicker();
+      acquireWakeLock();
       return;
     }
     if(running){
       running = false;
       clearInterval(intervalId);
       stopMsTicker();
+      releaseWakeLock();
     } else {
       running = true;
       intervalId = setInterval(tick, 1000);
       startMsTicker();
+      acquireWakeLock();
     }
   }
 
@@ -590,8 +679,18 @@
   let activeDigitEl = null;
   let activePlaceValue = null;
   let pointerDragging = false;
+  let pointerStartX = 0;
   let pointerStartY = 0;
+  let pointerStepX = 0;
   let pointerStepY = 0;
+
+  // Must match the CSS media query that triggers the forced-landscape rotation
+  // (see "force landscape on mobile" block). When that rotation is active,
+  // physical touch X/Y are rotated 90° relative to what the user sees, so the
+  // swipe gesture has to be read off the opposite screen axis.
+  function isRotatedLayout(){
+    return window.matchMedia("(max-width: 900px) and (orientation: portrait)").matches;
+  }
 
   digitDisplay.addEventListener("pointerdown", (e) => {
     if(running) return; // only settable while paused/idle, not mid-session
@@ -608,7 +707,9 @@
     activeDigitEl = target;
     activePlaceValue = placeValue;
     pointerDragging = false;
+    pointerStartX = e.clientX;
     pointerStartY = e.clientY;
+    pointerStepX = e.clientX;
     pointerStepY = e.clientY;
     activeDigitEl.classList.add("digit-active");
     getAudioCtx(); // unlock audio on the same user gesture
@@ -616,6 +717,22 @@
 
   digitDisplay.addEventListener("pointermove", (e) => {
     if(!activeDigitEl || activePlaceValue == null) return;
+
+    if(isRotatedLayout()){
+      // rotated view: visual "up/down" swipe reads as physical left/right
+      const totalDx = e.clientX - pointerStartX;
+      if(Math.abs(totalDx) > 6) pointerDragging = true;
+
+      const dx = e.clientX - pointerStepX;
+      if(Math.abs(dx) >= SWIPE_STEP_PX){
+        const steps = Math.trunc(dx / SWIPE_STEP_PX);
+        // swiping physically right = visually "up" = increases
+        adjustDuration(steps * activePlaceValue);
+        pointerStepX += steps * SWIPE_STEP_PX;
+      }
+      return;
+    }
+
     const totalDy = e.clientY - pointerStartY;
     if(Math.abs(totalDy) > 6) pointerDragging = true;
 
@@ -654,9 +771,14 @@
 
   renderMsDigits("00");
   updateDisplay();
+  fitTimerToScreen();
   syncProgressTrackWidth();
-  requestAnimationFrame(syncProgressTrackWidth);
-  setTimeout(syncProgressTrackWidth, 100);
+  requestAnimationFrame(scheduleFit);
+  setTimeout(scheduleFit, 100);
+  // fonts loading late can change natural glyph size after first paint
+  if(document.fonts && document.fonts.ready){
+    document.fonts.ready.then(scheduleFit);
+  }
 })();
 </script>
 <script>
