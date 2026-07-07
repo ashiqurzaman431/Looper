@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Focus Timer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #020101;
+    --cream: #f3ead9;
+    --cream-dim: #a89985;
+    --mono-dim: #6b5c49;
+    --sq-0: #1c140c;
+    --accent: #ff8a3d;
+    --radius: 28px;
+    --tr: 255; --tg: 138; --tb: 61;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;-webkit-tap-highlight-color:transparent;overscroll-behavior:none;}
+  body{
+    min-height:100%;
+    background:
+      radial-gradient(circle at 18% 12%, rgba(255,138,61,0.07), transparent 42%),
+      radial-gradient(circle at 85% 15%, rgba(255,90,40,0.04), transparent 45%),
+      radial-gradient(circle at 75% 90%, rgba(181,85,28,0.05), transparent 50%),
+      var(--bg);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:0;
+    font-family:'JetBrains Mono', monospace;
+    color:var(--cream);
+  }
+
+  .card{
+    width:100%;
+    height:100%;
+    max-width:none;
+    background: linear-gradient(160deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01));
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    border:none;
+    border-radius:0;
+    padding:36px 32px;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.08),
+      inset 0 0 60px rgba(255,255,255,0.015);
+    position:relative;
+    overflow:hidden;
+    text-align:center;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:flex-start;
+    padding-top:8vh;
+    cursor:pointer;
+    user-select:none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    touch-action: none;
+    outline: none;
+  }
+  .card::before{
+    content:"";
+    position:absolute;
+    top:-120px; right:-120px;
+    width:280px; height:280px;
+    background: radial-gradient(circle, rgba(255,138,61,0.18), transparent 70%);
+    pointer-events:none;
+  }
+
+  /* ---------- digit matrix ---------- */
+  .digit-display{
+    --cell: clamp(22px, 9.9vmin, 53px);
+    --gap: clamp(4.2px, 1.21vmin, 10px);
+    display:flex;
+    align-items:flex-end;
+    justify-content:center;
+    gap: clamp(11px, 2.9vmin, 22px);
+    margin:8px auto 20px;
+  }
+  .digit-display.compact{ --cell: 15px; --gap: 4px; }
+  .digit-display.message-mode{
+    --cell: 10px;
+    --gap: 2px;
+    flex-direction:column;
+    align-items:center;
+    gap:10px;
+  }
+
+  .digit{
+    position:relative;
+    width: calc(3*var(--cell) + 2*var(--gap));
+    height: calc(5*var(--cell) + 4*var(--gap));
+    flex-shrink:0;
+  }
+  .digit .bgpx, .digit .tok{
+    position:absolute;
+    width:var(--cell);
+    height:var(--cell);
+    border-radius:4px;
+    transform: translate(
+      calc(var(--col) * (var(--cell) + var(--gap))),
+      calc(var(--row) * (var(--cell) + var(--gap)))
+    );
+  }
+  .digit .bgpx{ background: var(--sq-0); }
+  .digit .tok{
+    background: rgb(var(--tr) var(--tg) var(--tb));
+    box-shadow:
+      0 0 6px 1px rgba(var(--tr), var(--tg), var(--tb), 0.505),
+      0 0 18px 4px rgba(var(--tr), var(--tg), var(--tb), 0.281),
+      0 0 34px 10px rgba(var(--tr), var(--tg), var(--tb), 0.123);
+    transition:
+      transform .5s cubic-bezier(.22,1,.36,1),
+      box-shadow .4s ease,
+      opacity .35s ease;
+  }
+  .digit .tok.spawn{ animation: pixelIgnite .5s cubic-bezier(.22,1,.36,1); }
+  .digit .tok.leaving{ opacity:0; }
+  @keyframes pixelIgnite{
+    0%{ box-shadow:0 0 0 0 rgba(var(--tr), var(--tg), var(--tb), 0); transform-origin:center; transform: translate(calc(var(--col) * (var(--cell) + var(--gap))), calc(var(--row) * (var(--cell) + var(--gap)))) scale(0.5); }
+    55%{ box-shadow:0 0 30px 10px rgba(var(--tr), var(--tg), var(--tb), 0.364); transform: translate(calc(var(--col) * (var(--cell) + var(--gap))), calc(var(--row) * (var(--cell) + var(--gap)))) scale(1.1); }
+    100%{ transform: translate(calc(var(--col) * (var(--cell) + var(--gap))), calc(var(--row) * (var(--cell) + var(--gap)))) scale(1); }
+  }
+
+  .colon{
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    gap:var(--gap);
+    height: calc(5*var(--cell) + 4*var(--gap));
+    flex-shrink:0;
+  }
+  .colon .px{
+    width:var(--cell);
+    height:var(--cell);
+    border-radius:4px;
+    background: var(--sq-0);
+  }
+  .colon .px.on{
+    background: rgb(var(--tr) var(--tg) var(--tb));
+    box-shadow: 0 0 6px 1px rgba(var(--tr), var(--tg), var(--tb), 0.505), 0 0 16px 4px rgba(var(--tr), var(--tg), var(--tb), 0.224);
+  }
+
+  .message-row{
+    display:flex;
+    justify-content:center;
+    gap:var(--gap);
+  }
+
+  .timer-row{
+    display:flex;
+    align-items:flex-end;
+    justify-content:center;
+    gap: clamp(10px, 2vmin, 18px);
+    margin:8px auto 12px;
+    transform: translateX(-32px);
+  }
+  .timer-row .digit-display{ margin:0; }
+
+  .digit-display.ms-pixels{
+    --cell: clamp(10px, 3.9vmin, 24px);
+    --gap: clamp(2.3px, 0.55vmin, 4.2px);
+    gap: clamp(4.2px, 1.1vmin, 8.5px);
+    opacity:1;
+    transition: opacity .2s ease;
+  }
+  .digit-display.ms-pixels.idle{ opacity:0.32; }
+
+  .progress-track{
+    width:100%;
+    max-width:100%;
+    height:4px;
+    margin:0 auto 26px;
+    background: rgba(255,255,255,0.06);
+    border-radius:4px;
+    overflow:hidden;
+  }
+  .progress-fill{
+    height:100%;
+    width:100%;
+    background: rgb(var(--tr) var(--tg) var(--tb));
+    border-radius:4px;
+    transition: width 0.3s linear, background 0.4s linear;
+  }
+
+  .controls{
+    display:flex;
+    justify-content:center;
+    gap:12px;
+  }
+  .controls button{
+    font-family:'JetBrains Mono', monospace;
+    font-size:11px;
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    padding:12px 22px;
+    border-radius:14px;
+    border:1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.03);
+    color:var(--cream);
+    cursor:pointer;
+    transition:.15s;
+  }
+  .controls button.primary{
+    background:rgb(var(--tr) var(--tg) var(--tb));
+    color:#1a0f06;
+    border-color:rgb(var(--tr) var(--tg) var(--tb));
+    font-weight:700;
+  }
+  .controls button:hover{ filter:brightness(1.12); }
+  .controls button:active{ transform:scale(0.96); }
+
+  @media (max-width:420px){
+    .card{ padding:28px 18px; }
+    .digit-display{ gap:8px; }
+    .digit-display.compact{ --cell: 11px; --gap: 2px; gap:6px; }
+    .digit-display.message-mode{ --cell: 8px; --gap: 2px; }
+  }
+
+  /* ---------- force landscape on mobile ---------- */
+  @media screen and (max-width: 900px) and (orientation: portrait){
+    html{
+      transform: rotate(90deg);
+      transform-origin: left top;
+      width: 100vh;
+      height: 100vw;
+      overflow-x: hidden;
+      position: absolute;
+      top: 0;
+      left: 100%;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="timer-row">
+    <div class="digit-display" id="digitDisplay"></div>
+    <div class="digit-display ms-pixels idle" id="msDisplay"></div>
+  </div>
+  <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  const FONT = {
+    "0":["111","101","101","101","111"],
+    "1":["010","010","010","010","010"],
+    "2":["111","001","111","100","111"],
+    "3":["111","001","111","001","111"],
+    "4":["101","101","111","001","001"],
+    "5":["111","100","111","001","111"],
+    "6":["111","100","111","101","111"],
+    "7":["111","001","001","001","001"],
+    "8":["111","101","111","101","111"],
+    "9":["111","101","111","001","111"],
+    "T":["111","010","010","010","010"],
+    "I":["111","010","010","010","111"],
+    "M":["101","111","111","101","101"],
+    "E":["111","100","111","100","111"],
+    "N":["101","111","111","111","101"],
+    "D":["110","101","101","101","110"]
+  };
+  const COLON = ["0","1","0","1","0"];
+
+  const digitDisplay = document.getElementById("digitDisplay");
+  const msDisplay = document.getElementById("msDisplay");
+  const card = document.querySelector(".card");
+  const progressFill = document.getElementById("progressFill");
+  const timerRow = document.querySelector(".timer-row");
+  const progressTrack = document.querySelector(".progress-track");
+
+  function syncProgressTrackWidth(){
+    const w = timerRow.offsetWidth;
+    if(w > 0) progressTrack.style.width = w + "px";
+  }
+  window.addEventListener("resize", syncProgressTrackWidth);
+  window.addEventListener("orientationchange", () => setTimeout(syncProgressTrackWidth, 50));
+
+  /* ---------- glyph helpers ---------- */
+  function litCells(ch){
+    const rows = FONT[ch];
+    const cells = [];
+    for(let r=0;r<5;r++){
+      for(let c=0;c<3;c++){
+        if(rows[r][c] === "1") cells.push([r,c]);
+      }
+    }
+    return cells;
+  }
+
+  function buildGlyphGrid(ch){
+    const wrap = document.createElement("div");
+    wrap.className = "digit";
+    wrap.dataset.char = ch;
+    for(let r=0;r<5;r++){
+      for(let c=0;c<3;c++){
+        const bg = document.createElement("div");
+        bg.className = "bgpx";
+        bg.style.setProperty("--row", r);
+        bg.style.setProperty("--col", c);
+        wrap.appendChild(bg);
+      }
+    }
+    litCells(ch).forEach(([r,c]) => {
+      const tok = document.createElement("div");
+      tok.className = "tok";
+      tok.style.setProperty("--row", r);
+      tok.style.setProperty("--col", c);
+      wrap.appendChild(tok);
+    });
+    return wrap;
+  }
+
+  function buildColonGrid(){
+    const wrap = document.createElement("div");
+    wrap.className = "colon";
+    COLON.forEach(v => {
+      const px = document.createElement("div");
+      px.className = "px" + (v === "1" ? " on" : "");
+      wrap.appendChild(px);
+    });
+    return wrap;
+  }
+
+  // Morphs a digit cell from its current value to `newCh`: pixels that exist
+  // in both shapes stay put or slide to the nearest spot still needed, only
+  // the leftover difference fades out / spawns in.
+  function updateDigitGrid(el, newCh){
+    if(el.dataset.char === newCh) return;
+    el.dataset.char = newCh;
+
+    const tokens = Array.from(el.querySelectorAll(".tok:not(.leaving)"));
+    const oldPositions = tokens.map(t => ({
+      r: parseInt(t.style.getPropertyValue("--row"), 10),
+      c: parseInt(t.style.getPropertyValue("--col"), 10),
+      el: t,
+      used: false
+    }));
+    const newPositions = litCells(newCh).map(([r,c]) => ({ r, c, used:false }));
+
+    // 1) keep exact matches in place
+    oldPositions.forEach(op => {
+      if(op.used) return;
+      const exact = newPositions.find(np => !np.used && np.r === op.r && np.c === op.c);
+      if(exact){ exact.used = true; op.used = true; }
+    });
+
+    // 2) slide remaining old tokens to the nearest still-needed spot
+    oldPositions.filter(op => !op.used).forEach(op => {
+      let best = null, bestDist = Infinity;
+      newPositions.forEach(np => {
+        if(np.used) return;
+        const d = Math.abs(np.r - op.r) + Math.abs(np.c - op.c);
+        if(d < bestDist){ bestDist = d; best = np; }
+      });
+      if(best){
+        best.used = true;
+        op.used = true;
+        op.el.style.setProperty("--row", best.r);
+        op.el.style.setProperty("--col", best.c);
+      }
+    });
+
+    // 3) truly unneeded old tokens fade out and get removed
+    oldPositions.filter(op => !op.used).forEach(op => {
+      op.el.classList.add("leaving");
+      setTimeout(() => op.el.remove(), 400);
+    });
+
+    // 4) positions the new shape needs that nothing could slide into: spawn fresh
+    newPositions.filter(np => !np.used).forEach(np => {
+      const tok = document.createElement("div");
+      tok.className = "tok spawn";
+      tok.style.setProperty("--row", np.r);
+      tok.style.setProperty("--col", np.c);
+      el.appendChild(tok);
+    });
+  }
+
+  function renderMessage(lines){
+    digitDisplay.classList.remove("compact");
+    digitDisplay.classList.add("message-mode");
+    digitDisplay.innerHTML = "";
+    lines.forEach(line => {
+      const row = document.createElement("div");
+      row.className = "message-row";
+      for(const ch of line){
+        row.appendChild(buildGlyphGrid(ch));
+      }
+      digitDisplay.appendChild(row);
+    });
+  }
+
+  function renderDigits(str){
+    digitDisplay.classList.remove("message-mode");
+    const chars = str.split("");
+    digitDisplay.classList.toggle("compact", chars.length > 5);
+
+    if(digitDisplay.children.length !== chars.length){
+      digitDisplay.innerHTML = "";
+      chars.forEach(ch => digitDisplay.appendChild(ch === ":" ? buildColonGrid() : buildGlyphGrid(ch)));
+      return;
+    }
+
+    chars.forEach((ch, i) => {
+      if(ch === ":") return; // colon is static, never changes
+      updateDigitGrid(digitDisplay.children[i], ch);
+    });
+  }
+
+  function formatTime(s){
+    const h = Math.floor(s/3600);
+    const m = Math.floor((s%3600)/60);
+    const sec = s%60;
+    if(h > 0){
+      return h + ":" + String(m).padStart(2,"0") + ":" + String(sec).padStart(2,"0");
+    }
+    return String(m).padStart(2,"0") + ":" + String(sec).padStart(2,"0");
+  }
+
+  /* ---------- timer state ---------- */
+  const DURATIONS = { focus: 25*60, short: 5*60, long: 15*60, custom: 90*60 };
+  const LABELS = { focus: "Focus session", short: "Short break", long: "Long break", custom: "Custom session" };
+  let mode = "focus";
+  let remaining = DURATIONS.focus;
+  let running = false;
+  let intervalId = null;
+  let finished = false;
+  let msTickerId = null;
+  let msStart = 0;
+
+  const START_RGB = [255, 138, 61]; // orange, full time remaining
+  const END_RGB = [224, 40, 40];    // red, reached once 85% of time is used up
+  const RED_AT_ELAPSED = 0.85;
+
+  function updateTimerColor(elapsedFraction){
+    const t = Math.max(0, Math.min(1, elapsedFraction / RED_AT_ELAPSED));
+    const r = Math.round(START_RGB[0] + (END_RGB[0]-START_RGB[0]) * t);
+    const g = Math.round(START_RGB[1] + (END_RGB[1]-START_RGB[1]) * t);
+    const b = Math.round(START_RGB[2] + (END_RGB[2]-START_RGB[2]) * t);
+    const root = document.documentElement.style;
+    root.setProperty("--tr", r);
+    root.setProperty("--tg", g);
+    root.setProperty("--tb", b);
+  }
+
+  function updateDisplay(){
+    renderDigits(formatTime(remaining));
+    const total = DURATIONS[mode];
+    const elapsedFraction = 1 - (remaining/total);
+    updateTimerColor(elapsedFraction);
+    progressFill.style.width = ((remaining/total)*100) + "%";
+    syncProgressTrackWidth();
+  }
+
+  function renderMsDigits(str){
+    const chars = str.split("");
+    if(msDisplay.children.length !== chars.length){
+      msDisplay.innerHTML = "";
+      chars.forEach(ch => msDisplay.appendChild(buildGlyphGrid(ch)));
+      return;
+    }
+    chars.forEach((ch, i) => updateDigitGrid(msDisplay.children[i], ch));
+  }
+
+  function startMsTicker(){
+    msStart = performance.now();
+    msDisplay.classList.remove("idle");
+    clearInterval(msTickerId);
+    msTickerId = setInterval(() => {
+      const cs = Math.floor((performance.now() - msStart) % 1000 / 10);
+      renderMsDigits(String(cs).padStart(2, "0"));
+    }, 20);
+  }
+
+  function stopMsTicker(){
+    clearInterval(msTickerId);
+    msTickerId = null;
+    msDisplay.classList.add("idle");
+  }
+
+  function tick(){
+    remaining--;
+    if(remaining <= 0){
+      clearInterval(intervalId);
+      running = false;
+      remaining = 0;
+      finished = true;
+      stopMsTicker();
+      updateTimerColor(1); // lock to full red
+      progressFill.style.width = "0%";
+      renderMessage(["TIME", "ENDED"]);
+      return;
+    }
+    updateDisplay();
+  }
+
+  function toggleTimer(){
+    if(finished){
+      finished = false;
+      remaining = DURATIONS[mode];
+      updateDisplay();
+      running = true;
+      intervalId = setInterval(tick, 1000);
+      startMsTicker();
+      return;
+    }
+    if(running){
+      running = false;
+      clearInterval(intervalId);
+      stopMsTicker();
+    } else {
+      running = true;
+      intervalId = setInterval(tick, 1000);
+      startMsTicker();
+    }
+  }
+
+  /* ---------- swipe up/down on a digit to set the timer value ---------- */
+  const SWIPE_STEP_PX = 36;       // px of vertical drag per increment
+  const SWIPE_STEP_SECONDS = 60;  // arrow-key fallback step (no digit is "targeted" with a key press)
+  const MIN_DURATION = 60;        // 1 minute floor
+  const MAX_DURATION = 180*60;    // 3 hour ceiling
+  const PLACE_VALUES = [1, 10, 60, 600, 3600, 36000]; // seconds per digit, counted from the rightmost digit
+
+  let audioCtx = null;
+  function getAudioCtx(){
+    if(!audioCtx){
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if(Ctx) audioCtx = new Ctx();
+    }
+    if(audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  }
+
+  // short square-wave "retro" blip: higher pitch going up, lower going down
+  function playTick(direction){
+    const ctx = getAudioCtx();
+    if(!ctx) return;
+    const t0 = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(direction > 0 ? 660 : 330, t0);
+    osc.frequency.linearRampToValueAtTime(direction > 0 ? 880 : 220, t0 + 0.07);
+    gain.gain.setValueAtTime(0.09, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.09);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.1);
+  }
+
+  function adjustDuration(deltaSeconds){
+    let next = remaining + deltaSeconds;
+    next = Math.max(MIN_DURATION, Math.min(MAX_DURATION, next));
+    if(next === remaining) return; // hit a limit, no change/sound
+    remaining = next;
+    DURATIONS[mode] = next; // keep the bar full and restart-after-finish in sync
+    updateDisplay();
+    playTick(deltaSeconds > 0 ? 1 : -1);
+  }
+
+  // figures out what a given digit cell is "worth" in seconds, based on its
+  // position counting from the right (ones-of-seconds, tens-of-seconds,
+  // ones-of-minutes, tens-of-minutes, ones-of-hours...)
+  function digitPlaceValue(digitEl){
+    const cells = Array.from(digitDisplay.children).filter(c => c.classList.contains("digit"));
+    const idx = cells.indexOf(digitEl);
+    if(idx === -1) return null;
+    const fromRight = cells.length - 1 - idx;
+    return PLACE_VALUES[fromRight] ?? null;
+  }
+
+  let activeDigitEl = null;
+  let activePlaceValue = null;
+  let pointerDragging = false;
+  let pointerStartY = 0;
+  let pointerStepY = 0;
+
+  digitDisplay.addEventListener("pointerdown", (e) => {
+    if(running) return; // only settable while paused/idle, not mid-session
+    if(finished){
+      finished = false;
+      remaining = DURATIONS[mode];
+      updateDisplay(); // rebuild real digits before figuring out what was pressed
+    }
+    const target = (document.elementFromPoint(e.clientX, e.clientY) || e.target).closest(".digit");
+    if(!target) return;
+    const placeValue = digitPlaceValue(target);
+    if(placeValue == null) return;
+
+    activeDigitEl = target;
+    activePlaceValue = placeValue;
+    pointerDragging = false;
+    pointerStartY = e.clientY;
+    pointerStepY = e.clientY;
+    activeDigitEl.classList.add("digit-active");
+    getAudioCtx(); // unlock audio on the same user gesture
+  });
+
+  digitDisplay.addEventListener("pointermove", (e) => {
+    if(!activeDigitEl || activePlaceValue == null) return;
+    const totalDy = e.clientY - pointerStartY;
+    if(Math.abs(totalDy) > 6) pointerDragging = true;
+
+    const dy = e.clientY - pointerStepY;
+    if(Math.abs(dy) >= SWIPE_STEP_PX){
+      const steps = Math.trunc(dy / SWIPE_STEP_PX);
+      // swiping up (negative dy) increases, swiping down decreases
+      adjustDuration(-steps * activePlaceValue);
+      pointerStepY += steps * SWIPE_STEP_PX;
+    }
+  });
+
+  function endDigitPointer(){
+    if(activeDigitEl) activeDigitEl.classList.remove("digit-active");
+    activeDigitEl = null;
+    activePlaceValue = null;
+  }
+  digitDisplay.addEventListener("pointerup", endDigitPointer);
+  digitDisplay.addEventListener("pointercancel", endDigitPointer);
+  digitDisplay.addEventListener("pointerleave", endDigitPointer);
+
+  // tap/click anywhere on the card toggles start/pause, except on
+  // interactive controls (mode pills, custom duration inputs), and
+  // except when the click was actually the end of a swipe gesture
+  card.addEventListener("click", (e) => {
+    if(pointerDragging){ pointerDragging = false; return; }
+    toggleTimer();
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if(e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    if(e.key === " "){ e.preventDefault(); toggleTimer(); }
+    if(e.key === "ArrowUp"){ e.preventDefault(); adjustDuration(SWIPE_STEP_SECONDS); }
+    if(e.key === "ArrowDown"){ e.preventDefault(); adjustDuration(-SWIPE_STEP_SECONDS); }
+  });
+
+  renderMsDigits("00");
+  updateDisplay();
+  syncProgressTrackWidth();
+  requestAnimationFrame(syncProgressTrackWidth);
+  setTimeout(syncProgressTrackWidth, 100);
+})();
+</script>
+</body>
+</html>
