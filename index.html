@@ -179,10 +179,7 @@
     --cell: clamp(10px, 3.9vmin, 24px);
     --gap: clamp(2.3px, 0.55vmin, 4.2px);
     gap: clamp(4.2px, 1.1vmin, 8.5px);
-    opacity:1;
-    transition: opacity .2s ease;
   }
-  .digit-display.ms-pixels.idle{ opacity:0.32; }
   /* the ms display updates far more often than the main timer, so it skips
      the transform/box-shadow transitions and spawn animation entirely --
      those are the expensive part, and at this update rate they'd just be
@@ -209,6 +206,53 @@
     background: rgb(var(--tr) var(--tg) var(--tb));
     border-radius:4px;
     transition: width 0.3s linear, background 0.4s linear;
+  }
+
+  /* ---------- lap markers (recorded via double-tap) ---------- */
+  .lap-panel{
+    position:absolute;
+    left:16px;
+    bottom:16px;
+    max-width:42%;
+    max-height:32%;
+    overflow-y:auto;
+    padding:10px 14px;
+    border-radius:14px;
+    background:rgba(255,255,255,0.06);
+    border:1px solid rgba(255,255,255,0.08);
+    backdrop-filter:blur(6px);
+    -webkit-backdrop-filter:blur(6px);
+    opacity:0;
+    transform:translateY(8px);
+    transition:opacity .25s ease, transform .25s ease;
+    pointer-events:none;
+    z-index:5;
+  }
+  .lap-panel.visible{
+    opacity:1;
+    transform:translateY(0);
+    pointer-events:auto;
+  }
+  .lap-list{
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+  }
+  .lap-row{
+    display:flex;
+    justify-content:space-between;
+    gap:14px;
+    font-size:clamp(11px, 1.6vmin, 14px);
+    color:rgba(255,255,255,0.75);
+    font-variant-numeric: tabular-nums;
+    white-space:nowrap;
+  }
+  .lap-index{
+    opacity:0.55;
+    font-weight:600;
+  }
+  .lap-time{
+    font-weight:500;
   }
 
   .controls{
@@ -266,9 +310,12 @@
   <div class="timer-wrap" id="timerWrap">
     <div class="timer-row">
       <div class="digit-display" id="digitDisplay"></div>
-      <div class="digit-display ms-pixels idle" id="msDisplay"></div>
+      <div class="digit-display ms-pixels" id="msDisplay"></div>
     </div>
     <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+  </div>
+  <div class="lap-panel" id="lapPanel">
+    <div class="lap-list" id="lapList"></div>
   </div>
 </div>
 
@@ -303,6 +350,8 @@
   const timerRow = document.querySelector(".timer-row");
   const progressTrack = document.querySelector(".progress-track");
   const timerWrap = document.getElementById("timerWrap");
+  const lapPanel = document.getElementById("lapPanel");
+  const lapList = document.getElementById("lapList");
 
   function syncProgressTrackWidth(){
     const w = timerRow.offsetWidth;
@@ -480,24 +529,120 @@
     });
   }
 
-  function formatTime(s){
-    const h = Math.floor(s/3600);
-    const m = Math.floor((s%3600)/60);
-    const sec = s%60;
-    if(h > 0){
-      return h + ":" + String(m).padStart(2,"0") + ":" + String(sec).padStart(2,"0");
-    }
-    return String(m).padStart(2,"0") + ":" + String(sec).padStart(2,"0");
+  /* ---------- independent digit model ----------
+     Each place (hours-tens, hours-ones, minutes-tens, ...) is its own value
+     that wraps within its own range and never carries into its neighbor.
+     Only minutes-tens and seconds-tens are capped at 5 (since 60 minutes/
+     seconds roll over); everything else goes 0-9. The ms group is 3 digits
+     (hundreds/tens/ones of a millisecond) for true 1ms resolution. */
+  const DIGIT_MAX = { hT:9, hO:9, mT:5, mO:9, sT:5, sO:9, msH:9, msT:9, msO:9 };
+
+  function digitsToMs(d){
+    const h = d.hT*10 + d.hO;
+    const m = d.mT*10 + d.mO;
+    const s = d.sT*10 + d.sO;
+    const ms = d.msH*100 + d.msT*10 + d.msO;
+    return (((h*3600) + (m*60) + s) * 1000) + ms;
+  }
+
+  // Only used to decompose a REAL countdown/stopwatch value (while running)
+  // into digits for display -- this is where normal carry/borrow is expected
+  // and correct (00 seconds borrows a minute, etc).
+  function msToDigits(ms){
+    ms = Math.max(0, Math.round(ms));
+    const msPart = ms % 1000;
+    let totalSec = Math.floor(ms / 1000);
+    const s = totalSec % 60; totalSec = Math.floor(totalSec / 60);
+    const m = totalSec % 60; totalSec = Math.floor(totalSec / 60);
+    const h = Math.min(99, totalSec);
+    return {
+      hT: Math.floor(h/10), hO: h%10,
+      mT: Math.floor(m/10), mO: m%10,
+      sT: Math.floor(s/10), sO: s%10,
+      msH: Math.floor(msPart/100), msT: Math.floor((msPart%100)/10), msO: msPart%10
+    };
+  }
+
+  function formatDigitsString(d){
+    const showHours = d.hT > 0 || d.hO > 0;
+    let str = "";
+    if(showHours) str += "" + d.hT + d.hO + ":";
+    str += "" + d.mT + d.mO + ":" + d.sT + d.sO;
+    return str;
+  }
+
+  // which slots are shown in digitDisplay right now, left to right
+  function currentSlotOrder(){
+    return (digits.hT > 0 || digits.hO > 0)
+      ? ["hT","hO","mT","mO","sT","sO"]
+      : ["mT","mO","sT","sO"];
   }
 
   /* ---------- timer state ---------- */
-  const DURATIONS = { focus: 25*60, short: 5*60, long: 15*60, custom: 90*60 };
+  const DURATIONS = { focus: 25*60*1000, short: 5*60*1000, long: 15*60*1000, custom: 90*60*1000 }; // milliseconds
   const LABELS = { focus: "Focus session", short: "Short break", long: "Long break", custom: "Custom session" };
   let mode = "focus";
-  let remaining = DURATIONS.focus;
+  let digits = msToDigits(DURATIONS.focus);
+  let remainingMs = DURATIONS.focus;
   let running = false;
-  let intervalId = null;
   let finished = false;
+
+  /* ---------- stopwatch mode ----------
+     If every digit is 00 when the timer is started, it counts UP
+     indefinitely instead of counting down -- a plain stopwatch. This is
+     decided once per "session" (see clearSession below) and preserved
+     across pause/resume within that session. null = not yet decided. */
+  let stopwatchMode = null;
+
+  /* ---------- lap markers (double-tap) ----------
+     Recorded while a session is running; cleared whenever the session ends
+     (timer finishes) or a new duration is configured. */
+  let laps = [];
+
+  // Ends the current "session": clears laps and lets the next start decide
+  // fresh whether it's a countdown or a stopwatch.
+  function clearSession(){
+    laps = [];
+    stopwatchMode = null;
+    renderLaps();
+  }
+
+  function formatLapLabel(){
+    const main = formatDigitsString(digits) || "00:00"; // current h/m/s reading
+    const ms = "" + digits.msH + digits.msT + digits.msO;
+    return main + "." + ms;
+  }
+
+  function recordLap(){
+    laps.unshift({ label: formatLapLabel() });
+    if(laps.length > 30) laps.length = 30; // reasonable cap
+    renderLaps();
+    playTick(1);
+  }
+
+  function renderLaps(){
+    if(!lapList || !lapPanel) return;
+    lapList.innerHTML = "";
+    if(laps.length === 0){
+      lapPanel.classList.remove("visible");
+      return;
+    }
+    lapPanel.classList.add("visible");
+    const total = laps.length;
+    laps.forEach((lap, i) => {
+      const row = document.createElement("div");
+      row.className = "lap-row";
+      const idx = document.createElement("span");
+      idx.className = "lap-index";
+      idx.textContent = "#" + (total - i);
+      const time = document.createElement("span");
+      time.className = "lap-time";
+      time.textContent = lap.label;
+      row.appendChild(idx);
+      row.appendChild(time);
+      lapList.appendChild(row);
+    });
+  }
 
   /* ---------- per-minute beep alert ----------
      Every time a new whole-minute segment begins (e.g. 55:00, then 54:00,
@@ -505,12 +650,14 @@
      interval for the next 60 seconds of countdown: a short beep plays every
      mm seconds of elapsed time within that segment, restarting the count
      each time a new minute segment begins. */
-  let periodAnchor = remaining;   // remaining-seconds value at the start of the current minute segment
-  let periodMM = Math.floor(remaining / 60); // that segment's minute value = beep interval in seconds
+  let periodAnchor = Math.floor(remainingMs/1000);   // whole seconds remaining at the start of the current minute segment
+  let periodMM = Math.floor(periodAnchor / 60);     // that segment's minute value = beep interval in seconds
+  let lastWholeSecond = periodAnchor;                // used to detect when a whole second boundary is crossed
 
   function startBeepPeriod(){
-    periodAnchor = remaining;
+    periodAnchor = Math.floor(remainingMs/1000);
     periodMM = Math.floor(periodAnchor / 60);
+    lastWholeSecond = periodAnchor;
   }
 
   /* ---------- screen wake lock (keep screen on while timer runs) ---------- */
@@ -540,8 +687,9 @@
       acquireWakeLock();
     }
   });
-  let msTickerId = null;
-  let msStart = 0;
+  let engineIntervalId = null;
+  let countdownStartPerf = 0;
+  let countdownStartMs = 0;
 
   const START_RGB = [255, 138, 61]; // orange, full time remaining
   const END_RGB = [224, 40, 40];    // red, reached once 85% of time is used up
@@ -559,11 +707,17 @@
   }
 
   function updateDisplay(){
-    renderDigits(formatTime(remaining));
-    const total = DURATIONS[mode];
-    const elapsedFraction = 1 - (remaining/total);
-    updateTimerColor(elapsedFraction);
-    progressFill.style.width = ((remaining/total)*100) + "%";
+    renderDigits(formatDigitsString(digits));
+    renderMsDigits("" + digits.msH + digits.msT + digits.msO);
+    if(stopwatchMode){
+      // no configured total to measure progress against
+      progressFill.style.width = "0%";
+    } else {
+      const total = DURATIONS[mode] || 1;
+      const elapsedFraction = 1 - (remainingMs/total);
+      updateTimerColor(elapsedFraction);
+      progressFill.style.width = ((remainingMs/total)*100) + "%";
+    }
     syncProgressTrackWidth();
   }
 
@@ -572,77 +726,115 @@
     if(msDisplay.children.length !== chars.length){
       msDisplay.innerHTML = "";
       chars.forEach(ch => msDisplay.appendChild(buildGlyphGrid(ch)));
+      scheduleFit();
       return;
     }
     chars.forEach((ch, i) => updateDigitGrid(msDisplay.children[i], ch));
   }
 
-  function startMsTicker(){
-    msStart = performance.now();
-    msDisplay.classList.remove("idle");
-    clearInterval(msTickerId);
-    msTickerId = setInterval(() => {
-      const cs = Math.floor((performance.now() - msStart) % 1000 / 10);
-      renderMsDigits(String(cs).padStart(2, "0"));
-    }, 50);
+  // Called once per whole-second boundary crossed while running. Fires
+  // playBeep() at elapsed = mm, 2*mm, 3*mm ... seconds within the current
+  // minute segment (mm = that segment's minute value), then rolls over to
+  // a new segment (new mm) once 60 seconds have elapsed since it began.
+  // If the segment is under a minute (mm = 0), beep every second instead.
+  // (Only used in countdown mode -- a stopwatch has no minute segments to
+  // count down through.)
+  function checkBeep(remainingWholeSeconds){
+    let elapsed = periodAnchor - remainingWholeSeconds;
+    if(elapsed >= 60){
+      periodAnchor = remainingWholeSeconds;
+      periodMM = Math.floor(periodAnchor / 60);
+      elapsed = 0;
+    }
+    if(elapsed <= 0) return;
+    if(periodMM <= 0){
+      playBeep(); // under a minute left in this segment: beep every second
+      return;
+    }
+    if(elapsed % periodMM === 0){
+      playBeep();
+    }
   }
 
-  function stopMsTicker(){
-    clearInterval(msTickerId);
-    msTickerId = null;
-    msDisplay.classList.add("idle");
-  }
+  // Single engine loop, throttled to 20fps for render cost, but the actual
+  // remaining/elapsed time is computed from real elapsed time
+  // (performance.now()) each tick rather than just decrementing a counter --
+  // this drives the ms digits for real and avoids setInterval drift.
+  // Counts down normally, or up indefinitely in stopwatch mode.
+  function engineTick(){
+    const elapsedMs = performance.now() - countdownStartPerf;
+    const newMs = stopwatchMode ? (countdownStartMs + elapsedMs) : (countdownStartMs - elapsedMs);
 
-  function tick(){
-    remaining--;
-    checkBeep();
-    if(remaining <= 0){
-      clearInterval(intervalId);
+    if(!stopwatchMode && newMs <= 0){
+      stopEngine();
       running = false;
-      remaining = 0;
       finished = true;
-      stopMsTicker();
+      remainingMs = 0;
+      digits = msToDigits(0);
       releaseWakeLock();
       updateTimerColor(1); // lock to full red
       progressFill.style.width = "0%";
       renderMessage(["TIME", "ENDED"]);
+      clearSession(); // session over: laps clear, next start re-decides mode
       return;
     }
+
+    remainingMs = newMs;
+    digits = msToDigits(remainingMs); // running: normal carry is correct here
+
+    if(!stopwatchMode){
+      const wholeSecond = Math.floor(remainingMs / 1000);
+      while(lastWholeSecond > wholeSecond){
+        lastWholeSecond--;
+        checkBeep(lastWholeSecond);
+      }
+    }
+
     updateDisplay();
+  }
+
+  function startEngine(){
+    countdownStartPerf = performance.now();
+    countdownStartMs = remainingMs;
+    clearInterval(engineIntervalId);
+    engineIntervalId = setInterval(engineTick, 50);
+  }
+
+  function stopEngine(){
+    clearInterval(engineIntervalId);
+    engineIntervalId = null;
   }
 
   function toggleTimer(){
     if(finished){
       finished = false;
-      remaining = DURATIONS[mode];
+      digits = msToDigits(DURATIONS[mode]);
+      remainingMs = DURATIONS[mode];
       updateDisplay();
       running = true;
+      if(stopwatchMode == null) stopwatchMode = (remainingMs === 0);
+      if(stopwatchMode) updateTimerColor(0);
       startBeepPeriod();
-      intervalId = setInterval(tick, 1000);
-      startMsTicker();
+      startEngine();
       acquireWakeLock();
       return;
     }
     if(running){
       running = false;
-      clearInterval(intervalId);
-      stopMsTicker();
+      stopEngine();
       releaseWakeLock();
     } else {
       running = true;
+      if(stopwatchMode == null) stopwatchMode = (remainingMs === 0);
+      if(stopwatchMode) updateTimerColor(0);
       startBeepPeriod();
-      intervalId = setInterval(tick, 1000);
-      startMsTicker();
+      startEngine();
       acquireWakeLock();
     }
   }
 
-  /* ---------- swipe up/down on a digit to set the timer value ---------- */
-  const SWIPE_STEP_PX = 36;       // px of vertical drag per increment
-  const SWIPE_STEP_SECONDS = 60;  // arrow-key fallback step (no digit is "targeted" with a key press)
-  const MIN_DURATION = 60;        // 1 minute floor
-  const MAX_DURATION = 180*60;    // 3 hour ceiling
-  const PLACE_VALUES = [1, 10, 60, 600, 3600, 36000]; // seconds per digit, counted from the rightmost digit
+  /* ---------- swipe up/down on a digit to set its value ---------- */
+  const SWIPE_STEP_PX = 36; // px of drag per increment
 
   let audioCtx = null;
   function getAudioCtx(){
@@ -712,47 +904,43 @@
     osc.stop(t0 + 0.1);
   }
 
-  // Called once per second while the timer is running. Fires playBeep() at
-  // elapsed = mm, 2*mm, 3*mm ... seconds within the current minute segment
-  // (mm = that segment's minute value), then rolls over to a new segment
-  // (new mm) once 60 seconds have elapsed since the segment began.
-  function checkBeep(){
-    if(periodMM <= 0) return;
-    let elapsed = periodAnchor - remaining;
-    if(elapsed >= 60){
-      periodAnchor = remaining;
-      periodMM = Math.floor(periodAnchor / 60);
-      elapsed = 0;
-      if(periodMM <= 0) return;
-    }
-    if(elapsed > 0 && elapsed % periodMM === 0){
-      playBeep();
-    }
-  }
-
-  function adjustDuration(deltaSeconds){
-    let next = remaining + deltaSeconds;
-    next = Math.max(MIN_DURATION, Math.min(MAX_DURATION, next));
-    if(next === remaining) return; // hit a limit, no change/sound
-    remaining = next;
-    DURATIONS[mode] = next; // keep the bar full and restart-after-finish in sync
+  // Adjusts exactly one digit slot, wrapping within its own range (0-9, or
+  // 0-5 for the tens-of-minutes/tens-of-seconds slots). Never touches any
+  // other slot -- this is what keeps digits fully independent while setting.
+  function adjustDigitSlot(slot, steps){
+    if(!slot || !steps) return;
+    const range = DIGIT_MAX[slot] + 1;
+    const next = ((digits[slot] + steps) % range + range) % range;
+    if(next === digits[slot]) return;
+    digits[slot] = next;
+    remainingMs = digitsToMs(digits);
+    DURATIONS[mode] = remainingMs; // keep the bar's "full" reference in sync while configuring
+    clearSession(); // a new duration is being set -- old laps/mode no longer apply
     updateDisplay();
-    playTick(deltaSeconds > 0 ? 1 : -1);
+    playTick(steps > 0 ? 1 : -1);
   }
 
-  // figures out what a given digit cell is "worth" in seconds, based on its
-  // position counting from the right (ones-of-seconds, tens-of-seconds,
-  // ones-of-minutes, tens-of-minutes, ones-of-hours...)
-  function digitPlaceValue(digitEl){
-    const cells = Array.from(digitDisplay.children).filter(c => c.classList.contains("digit"));
-    const idx = cells.indexOf(digitEl);
-    if(idx === -1) return null;
-    const fromRight = cells.length - 1 - idx;
-    return PLACE_VALUES[fromRight] ?? null;
+  // Maps a tapped .digit cell to its slot name, whether it's in the main
+  // h/m/s display (whose slot order shifts depending on whether hours are
+  // shown) or the always-three-cell ms display.
+  function slotForDigitCell(el){
+    if(msDisplay.contains(el)){
+      const cells = Array.from(msDisplay.children).filter(c => c.classList.contains("digit"));
+      const idx = cells.indexOf(el);
+      const order = ["msH","msT","msO"];
+      return order[idx] ?? null;
+    }
+    if(digitDisplay.contains(el)){
+      const cells = Array.from(digitDisplay.children).filter(c => c.classList.contains("digit"));
+      const idx = cells.indexOf(el);
+      const order = currentSlotOrder();
+      return order[idx] ?? null;
+    }
+    return null;
   }
 
   let activeDigitEl = null;
-  let activePlaceValue = null;
+  let activeSlot = null;
   let pointerDragging = false;
   let pointerStartX = 0;
   let pointerStartY = 0;
@@ -767,20 +955,21 @@
     return window.matchMedia("(max-width: 900px) and (orientation: portrait)").matches;
   }
 
-  digitDisplay.addEventListener("pointerdown", (e) => {
+  timerRow.addEventListener("pointerdown", (e) => {
     if(running) return; // only settable while paused/idle, not mid-session
     if(finished){
       finished = false;
-      remaining = DURATIONS[mode];
+      digits = msToDigits(DURATIONS[mode]);
+      remainingMs = DURATIONS[mode];
       updateDisplay(); // rebuild real digits before figuring out what was pressed
     }
     const target = (document.elementFromPoint(e.clientX, e.clientY) || e.target).closest(".digit");
     if(!target) return;
-    const placeValue = digitPlaceValue(target);
-    if(placeValue == null) return;
+    const slot = slotForDigitCell(target);
+    if(slot == null) return;
 
     activeDigitEl = target;
-    activePlaceValue = placeValue;
+    activeSlot = slot;
     pointerDragging = false;
     pointerStartX = e.clientX;
     pointerStartY = e.clientY;
@@ -790,8 +979,8 @@
     getAudioCtx(); // unlock audio on the same user gesture
   });
 
-  digitDisplay.addEventListener("pointermove", (e) => {
-    if(!activeDigitEl || activePlaceValue == null) return;
+  timerRow.addEventListener("pointermove", (e) => {
+    if(!activeDigitEl || activeSlot == null) return;
 
     if(isRotatedLayout()){
       // rotated view: visual "up/down" swipe reads as physical left/right
@@ -802,7 +991,7 @@
       if(Math.abs(dx) >= SWIPE_STEP_PX){
         const steps = Math.trunc(dx / SWIPE_STEP_PX);
         // swiping physically right = visually "up" = increases
-        adjustDuration(steps * activePlaceValue);
+        adjustDigitSlot(activeSlot, steps);
         pointerStepX += steps * SWIPE_STEP_PX;
       }
       return;
@@ -815,7 +1004,7 @@
     if(Math.abs(dy) >= SWIPE_STEP_PX){
       const steps = Math.trunc(dy / SWIPE_STEP_PX);
       // swiping up (negative dy) increases, swiping down decreases
-      adjustDuration(-steps * activePlaceValue);
+      adjustDigitSlot(activeSlot, -steps);
       pointerStepY += steps * SWIPE_STEP_PX;
     }
   });
@@ -823,28 +1012,68 @@
   function endDigitPointer(){
     if(activeDigitEl) activeDigitEl.classList.remove("digit-active");
     activeDigitEl = null;
-    activePlaceValue = null;
+    activeSlot = null;
   }
-  digitDisplay.addEventListener("pointerup", endDigitPointer);
-  digitDisplay.addEventListener("pointercancel", endDigitPointer);
-  digitDisplay.addEventListener("pointerleave", endDigitPointer);
+  timerRow.addEventListener("pointerup", endDigitPointer);
+  timerRow.addEventListener("pointercancel", endDigitPointer);
+  timerRow.addEventListener("pointerleave", endDigitPointer);
 
-  // tap/click anywhere on the card toggles start/pause, except on
-  // interactive controls (mode pills, custom duration inputs), and
-  // except when the click was actually the end of a swipe gesture
+  // tap/click anywhere on the card toggles start/pause; double-tap records
+  // a lap marker while running (or just starts, if idle); triple-tap resets
+  // every digit to 00 (stops the session first if one is running). Every tap
+  // waits out this window before acting, since we can't know if another tap
+  // is coming -- a small, standard trade-off for supporting all three.
+  const TAP_WINDOW_MS = 300;
+  let tapCount = 0;
+  let tapTimer = null;
+
+  function handleDoubleTap(){
+    if(running){
+      recordLap();
+    } else {
+      toggleTimer();
+    }
+  }
+
+  function resetAllToZero(){
+    if(running){
+      running = false;
+      stopEngine();
+      releaseWakeLock();
+    }
+    finished = false;
+    digits = { hT:0, hO:0, mT:0, mO:0, sT:0, sO:0, msH:0, msT:0, msO:0 };
+    remainingMs = 0;
+    DURATIONS[mode] = 0;
+    clearSession(); // new (zero) duration configured: laps clear, mode re-decided next start
+    updateDisplay();
+    playTick(-1);
+  }
+
   card.addEventListener("click", (e) => {
     if(pointerDragging){ pointerDragging = false; return; }
-    toggleTimer();
+    tapCount++;
+    clearTimeout(tapTimer);
+    tapTimer = setTimeout(() => {
+      const count = tapCount;
+      tapCount = 0;
+      if(count === 1) toggleTimer();
+      else if(count === 2) handleDoubleTap();
+      else if(count >= 3) resetAllToZero();
+    }, TAP_WINDOW_MS);
   });
 
   document.addEventListener("keydown", (e) => {
     if(e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
     if(e.key === " "){ e.preventDefault(); toggleTimer(); }
-    if(e.key === "ArrowUp"){ e.preventDefault(); adjustDuration(SWIPE_STEP_SECONDS); }
-    if(e.key === "ArrowDown"){ e.preventDefault(); adjustDuration(-SWIPE_STEP_SECONDS); }
+    if(e.key === "l" || e.key === "L"){ e.preventDefault(); if(running) recordLap(); }
+    if(e.key === "r" || e.key === "R"){ e.preventDefault(); resetAllToZero(); }
+    if(running) return;
+    if(e.key === "ArrowUp"){ e.preventDefault(); adjustDigitSlot("mO", 1); }
+    if(e.key === "ArrowDown"){ e.preventDefault(); adjustDigitSlot("mO", -1); }
   });
 
-  renderMsDigits("00");
+  renderMsDigits("000");
   updateDisplay();
   fitTimerToScreen();
   syncProgressTrackWidth();
